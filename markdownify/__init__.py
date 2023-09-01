@@ -101,38 +101,10 @@ class MarkdownConverter(object):
 
     def process_tag(self, node, convert_as_inline, children_only=False):
         text = ''
+        convert_children_as_inline = self.is_convert_children_as_inline(node, children_only)
 
-        # markdown headings or cells can't include
-        # block elements (elements w/newlines)
-        isHeading = html_heading_re.match(node.name) is not None
-        isCell = node.name in ['td', 'th']
-        convert_children_as_inline = convert_as_inline
-
-        if not children_only and (isHeading or isCell):
-            convert_children_as_inline = True
-
-        # Remove whitespace-only textnodes in purely nested nodes
-        def is_nested_node(el):
-            return el and el.name in ['ol', 'ul', 'li',
-                                      'table', 'thead', 'tbody', 'tfoot',
-                                      'tr', 'td', 'th']
-
-        if is_nested_node(node):
-            for el in node.children:
-                # Only extract (remove) whitespace-only text node if any of the
-                # conditions is true:
-                # - el is the first element in its parent
-                # - el is the last element in its parent
-                # - el is adjacent to an nested node
-                can_extract = (not el.previous_sibling
-                               or not el.next_sibling
-                               or is_nested_node(el.previous_sibling)
-                               or is_nested_node(el.next_sibling))
-                if (isinstance(el, NavigableString)
-                        and six.text_type(el).strip() == ''
-                        and can_extract):
-                    el.extract()
-
+        if self.is_nested_node(node):
+            self.extract_whitespace_text_node(node)
         # Convert the children first
         for el in node.children:
             if isinstance(el, Comment) or isinstance(el, Doctype):
@@ -140,13 +112,45 @@ class MarkdownConverter(object):
             elif isinstance(el, NavigableString):
                 text += self.process_text(el)
             else:
-                text += self.process_tag(el, convert_children_as_inline)
+                if el.name == 'table':
+                    text += self.process_table_tag(el, convert_children_as_inline)
+                else:
+                    text += self.process_tag(el, convert_children_as_inline)
 
         if not children_only:
             convert_fn = getattr(self, 'convert_%s' % node.name, None)
             if convert_fn and self.should_convert_tag(node.name):
                 text = convert_fn(node, text, convert_as_inline)
 
+        return text
+
+    def process_table_tag(self, node, convert_as_inline, tb_buf=[]):
+        text = ''
+        convert_children_as_inline = self.is_convert_children_as_inline(node)
+        if self.is_nested_node(node):
+            self.extract_whitespace_text_node(node)
+        for el in node.children:
+            if isinstance(el, Comment) or isinstance(el, Doctype):
+                continue
+            if isinstance(el, NavigableString):
+                text += self.process_text(el)
+                continue
+            if not tb_buf and el.name == 'tr' and not el.parent.previous_sibling:
+                cells = el.find_all(['th', 'td'])
+                tb_buf = [[]] * len(cells)
+            if el.name in ['th', 'td'] and el.has_attr('rowspan'):
+                rowspan = el['rowspan'] if el['rowspan'] - 1 > 0 else 0
+                index = el.parent.index(el) // 2
+                tb_buf[index] = [el] * rowspan
+            if any(tb_buf) and el.name == 'tr':
+                for index, value in enumerate(tb_buf):
+                    if value:
+                        single_el = value.pop()
+                        el.insert(index, single_el)
+            text += self.process_tag(el, convert_children_as_inline, tb_buf)
+        convert_fn = getattr(self, 'convert_%s' % node.name, None)
+        if convert_fn and self.should_convert_tag(node.name):
+            text = convert_fn(node, text, convert_as_inline)
         return text
 
     def process_text(self, el):
@@ -170,6 +174,38 @@ class MarkdownConverter(object):
             text = text.rstrip()
 
         return text
+
+    # markdown headings or cells can't include
+    # block elements (elements w/newlines)
+    @staticmethod
+    def is_convert_children_as_inline(node, children_only=False):
+        isHeading = html_heading_re.match(node.name) is not None
+        isCell = node.name in ['td', 'th']
+        if not children_only and (isHeading or isCell):
+            return True
+        return False
+
+    # Remove whitespace-only textnodes in purely nested nodes
+    @staticmethod
+    def is_nested_node(el):
+        return el and el.name in ['ol', 'ul', 'li', 'table', 'thead', 'tbody', 'tfoot',
+                                  'tr', 'td', 'th']
+
+    def extract_whitespace_text_node(self, node):
+        for el in node.children:
+            # Only extract (remove) whitespace-only text node if any of the
+            # conditions is true:
+            # - el is the first element in its parent
+            # - el is the last element in its parent
+            # - el is adjacent to an nested node
+            can_extract = (not el.previous_sibling
+                           or not el.next_sibling
+                           or self.is_nested_node(el.previous_sibling)
+                           or self.is_nested_node(el.next_sibling))
+            if (isinstance(el, NavigableString)
+                    and six.text_type(el).strip() == ''
+                    and can_extract):
+                el.extract()
 
     def __getattr__(self, attr):
         # Handle headings
