@@ -2,6 +2,7 @@ from bs4 import BeautifulSoup, NavigableString, Comment, Doctype
 from textwrap import fill
 import re
 import six
+import copy
 
 
 convert_heading_re = re.compile(r'convert_h(\d+)')
@@ -130,24 +131,45 @@ class MarkdownConverter(object):
         if self.is_nested_node(node):
             self.extract_whitespace_text_node(node)
         for el in node.children:
+            if not el:
+                continue
             if isinstance(el, Comment) or isinstance(el, Doctype):
                 continue
             if isinstance(el, NavigableString):
                 text += self.process_text(el)
                 continue
-            if not tb_buf and el.name == 'tr' and not el.parent.previous_sibling:
+            if el.name == 'tr':
                 cells = el.find_all(['th', 'td'])
-                tb_buf = [[]] * len(cells)
-            if el.name in ['th', 'td'] and el.has_attr('rowspan'):
-                rowspan = el['rowspan'] if el['rowspan'] - 1 > 0 else 0
-                index = el.parent.index(el) // 2
-                tb_buf[index] = [el] * rowspan
+                for ce in cells:
+                    if ce.has_attr('colspan') and int(ce['colspan']) > 1:
+                        colspan = int(ce['colspan']) - 1
+                        del ce['colspan']
+                        tmp = ce
+                        for _ in range(colspan):
+                            new_ce = copy.copy(ce)
+                            tmp.insert_after(new_ce)
+                            tmp = new_ce
+                for ch in el.children:
+                    if isinstance(ch, NavigableString) and not ch.name \
+                            and (not six.text_type(ch) or six.text_type(ch) == '\n'):
+                        ch.extract()
+            if not tb_buf and el.name == 'tr':
+                if (el.parent.name == 'table' and not el.previous_sibling) \
+                        or (el.parent.name != 'table' and not el.parent.previous_sibling):
+                    cells = el.find_all(['th', 'td'])
+                    tb_buf = [[]] * len(cells)
+            if el.name in ['th', 'td'] and el.has_attr('rowspan') and int(el['rowspan']) > 1:
+                rowspan = int(el['rowspan']) - 1
+                index = el.parent.index(el)
+                del el['rowspan']
+                new_el = copy.copy(el)
+                tb_buf[index] = [new_el] * rowspan
             if any(tb_buf) and el.name == 'tr':
                 for index, value in enumerate(tb_buf):
                     if value:
                         single_el = value.pop()
                         el.insert(index, single_el)
-            text += self.process_tag(el, convert_children_as_inline, tb_buf)
+            text += self.process_table_tag(el, convert_children_as_inline, tb_buf)
         convert_fn = getattr(self, 'convert_%s' % node.name, None)
         if convert_fn and self.should_convert_tag(node.name):
             text = convert_fn(node, text, convert_as_inline)
