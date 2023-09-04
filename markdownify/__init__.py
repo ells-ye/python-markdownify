@@ -151,7 +151,7 @@ class MarkdownConverter(object):
                             tmp = new_ce
                 for ch in el.children:
                     if isinstance(ch, NavigableString) and not ch.name \
-                            and (not six.text_type(ch) or six.text_type(ch) == '\n'):
+                            and (not six.text_type(ch).strip() or six.text_type(ch) == '\n'):
                         ch.extract()
             if not tb_buf and el.name == 'tr':
                 if (el.parent.name == 'table' and not el.previous_sibling) \
